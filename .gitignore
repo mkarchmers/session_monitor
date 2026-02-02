@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+**/*.pyc
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+# For specialized environments like Conda
+conda-env/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+
+# Unit test / coverage reports
+.tox/
+.nox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+htmlcov/
+.pytest_cache/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Environment variables (Crucial for security!)
+.env
+.flaskenv
+
+# IDE Specific (VS Code, PyCharm)
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
