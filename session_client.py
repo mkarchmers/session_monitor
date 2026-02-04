@@ -26,7 +26,24 @@ DEFAULT_SERVER_URL = "http://localhost:8000"
 
 
 class SessionClient:
-    """Tracks a Panel session's status via REST API."""
+    """Tracks a Panel session's status via REST API.
+
+    This client registers sessions with a monitoring server and sends periodic
+    heartbeats. If the server is unavailable, the client operates in offline
+    mode where tasks execute normally but are not tracked.
+
+    Attributes:
+        app_name: Name of the application being tracked.
+        user_id: Optional identifier for the user.
+        server_url: URL of the monitoring server.
+        session_id: Unique identifier for this session.
+        heartbeat_interval: Seconds between heartbeat updates.
+
+    Example:
+        >>> tracker = SessionClient.get_tracker(app_name="my_app")
+        >>> with tracker.task("Processing data"):
+        ...     process_data()
+    """
 
     _instances: dict[str, "SessionClient"] = {}
     _lock = threading.Lock()
@@ -58,7 +75,11 @@ class SessionClient:
 
     @staticmethod
     def _get_current_session_id() -> str:
-        """Get the current Panel session ID."""
+        """Get the current Panel session ID.
+
+        Returns:
+            The Panel session ID if available, otherwise a random UUID.
+        """
         try:
             if pn.state.curdoc and pn.state.curdoc.session_context:
                 return pn.state.curdoc.session_context.id
@@ -99,30 +120,48 @@ class SessionClient:
         # HTTP client
         self._client = httpx.Client(timeout=10.0)
 
-        # Register session with server
+        # Track connection state
+        self._connected = False
+
+        # Register session with server (may fail if server is down)
         self.session_id = self._register_session()
 
-        # Start heartbeat thread
-        self._start_heartbeat()
+        # Start heartbeat thread (only if connected)
+        if self._connected:
+            self._start_heartbeat()
 
         # Register cleanup on session end
         self._register_cleanup()
 
     def _register_session(self) -> str:
-        """Register this session with the server."""
+        """Register this session with the monitoring server.
+
+        Sets ``_connected`` to True on success, False on failure.
+
+        Returns:
+            Server-assigned session_id if successful, or a local UUID
+            if the server is unavailable.
+        """
         try:
             response = self._client.post(
                 f"{self.server_url}/sessions",
                 json={"app_name": self.app_name, "user_id": self.user_id},
             )
             response.raise_for_status()
+            self._connected = True
             return response.json()["session_id"]
         except Exception as e:
-            logger.error(f"Failed to register session: {e}")
-            raise
+            logger.warning(f"Server unavailable, running in offline mode: {e}")
+            self._connected = False
+            import uuid
+            return str(uuid.uuid4())
 
     def _start_heartbeat(self) -> None:
-        """Start the background heartbeat thread."""
+        """Start the background heartbeat thread.
+
+        Spawns a daemon thread that sends periodic heartbeats to the server.
+        If a kill request is received, triggers session destruction.
+        """
 
         def heartbeat_loop():
             while not self._stop_heartbeat.wait(self.heartbeat_interval):
@@ -146,7 +185,11 @@ class SessionClient:
         self._heartbeat_thread.start()
 
     def _handle_kill_request(self) -> None:
-        """Handle a kill request by destroying the Panel session."""
+        """Handle a kill request from the server.
+
+        Schedules session destruction on the document thread if available,
+        otherwise stops the client directly.
+        """
         try:
             doc = self._curdoc
             if doc and doc.session_context:
@@ -157,7 +200,11 @@ class SessionClient:
             self.stop()
 
     def _destroy_session(self) -> None:
-        """Destroy the session (called on document thread)."""
+        """Destroy the Panel session.
+
+        Must be called on the Bokeh document thread. Closes WebSocket
+        connections with code 1001 and schedules session destruction.
+        """
         try:
             self.stop()
 
@@ -187,7 +234,11 @@ class SessionClient:
             pass
 
     def _do_destroy(self, session) -> None:
-        """Actually destroy the session after delay."""
+        """Destroy the Bokeh session after a delay.
+
+        Args:
+            session: The Bokeh session object to destroy.
+        """
         try:
             if hasattr(session, "destroy"):
                 session.destroy()
@@ -195,7 +246,11 @@ class SessionClient:
             pass
 
     def _register_cleanup(self) -> None:
-        """Register cleanup handlers for when session ends."""
+        """Register cleanup handlers for session termination.
+
+        Registers handlers for both process exit (atexit) and Panel session
+        destruction to ensure proper cleanup.
+        """
 
         def cleanup():
             self.stop()
@@ -209,14 +264,20 @@ class SessionClient:
             pass
 
     def stop(self) -> None:
-        """Stop tracking and remove session from server."""
+        """Stop tracking and clean up resources.
+
+        Stops the heartbeat thread, removes the session from the server
+        (if connected), closes the HTTP client, and removes this instance
+        from the class registry.
+        """
         self._stop_heartbeat.set()
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=1)
-        try:
-            self._client.delete(f"{self.server_url}/sessions/{self.session_id}")
-        except Exception:
-            pass
+        if self._connected:
+            try:
+                self._client.delete(f"{self.server_url}/sessions/{self.session_id}")
+            except Exception:
+                pass
         try:
             self._client.close()
         except Exception:
@@ -231,24 +292,32 @@ class SessionClient:
             status: Status string ('idle', 'running', etc.)
             task: Optional task description
         """
+        if not self._connected:
+            return
         try:
             self._client.put(
                 f"{self.server_url}/sessions/{self.session_id}/status",
                 json={"status": status, "current_task": task},
             )
         except Exception as e:
-            logger.error(f"Failed to update status: {e}")
+            logger.warning(f"Failed to update status: {e}")
 
     @contextmanager
     def task(self, name: str):
         """Context manager for tracking a task.
 
-        Usage:
-            with tracker.task("Generating Q4 Report"):
-                run_report()
+        Sets status to 'running' on entry and 'idle' on exit. The task
+        executes normally even if the server is unavailable.
 
         Args:
-            name: Human-readable task name
+            name: Human-readable task name.
+
+        Yields:
+            None. The context manager is used for its side effects.
+
+        Example:
+            >>> with tracker.task("Generating Q4 Report"):
+            ...     run_report()
         """
         self.set_status("running", name)
         try:

@@ -15,7 +15,7 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Start the API server (required first)
+# Start the API server (optional - apps work without it in offline mode)
 uvicorn server:app --port 8000
 
 # Start the monitoring dashboard
@@ -69,7 +69,7 @@ panel serve app.py --port 5002 &
   | GET | `/sessions` | List all sessions with computed fields |
   | DELETE | `/sessions/stale` | Cleanup stale sessions |
 
-- **session_client.py**: HTTP-based tracker for Panel apps. Same API as the old SessionTracker. Spawns a daemon thread for heartbeats (every 30s). Use `with tracker.task("name"):` to mark running tasks. Checks for kill requests via heartbeat response.
+- **session_client.py**: HTTP-based tracker for Panel apps. Same API as the old SessionTracker. Spawns a daemon thread for heartbeats (every 30s). Use `with tracker.task("name"):` to mark running tasks. Checks for kill requests via heartbeat response. **Offline mode**: If the server is unavailable, the client runs in offline mode - tasks execute normally but are not tracked.
 
 - **monitor.py**: Dashboard app using Perspective widget. Auto-refreshes every 10 seconds. Sessions become "stale" (red) after 2 minutes without heartbeat, auto-deleted after 10 minutes. Includes Kill button for each session.
 
@@ -98,6 +98,8 @@ The `get_tracker` class method ensures one tracker per Panel session - calling i
 Optional parameters:
 - `user_id`: Optional user identifier
 - `server_url`: API server URL (default: `http://localhost:8000`)
+
+**Offline mode**: If the server is unavailable, the client automatically runs in offline mode. Tasks execute normally but session status is not reported. A warning is logged at startup.
 
 ### Kill Session Feature
 
