@@ -8,7 +8,7 @@ import threading
 
 import panel as pn
 
-from session_tracker import SessionTracker
+from session_client import SessionClient
 
 pn.extension(disconnect_notification="Connection lost, session was terminated")
 
@@ -48,7 +48,7 @@ class TaskRunner(pn.viewable.Viewer):
         self.status.object = f"Status: **Running** - {task_name} ({duration}s)"
 
         def do_task():
-            tracker = SessionTracker.get_tracker(app_name="task_runner")
+            tracker = SessionClient.get_tracker(app_name="task_runner")
             with tracker.task(task_name):
                 time.sleep(duration)
             self.run_button.disabled = False
@@ -73,7 +73,7 @@ class App:
 
     def run(self):
         # Initialize session tracker (starts heartbeat)
-        SessionTracker.get_tracker(app_name="task_runner")
+        SessionClient.get_tracker(app_name="task_runner")
 
         task_runner = TaskRunner()
         template = pn.template.BootstrapTemplate(title="Task Runner")

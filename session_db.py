@@ -1,19 +1,17 @@
 """
-Database layer for Panel session monitoring.
-Uses SQLite to store session information across all monitored apps.
+Database layer for Session Monitoring.
+Thread-safe SQLite operations with thread-local connections.
 """
 
 import sqlite3
 import threading
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-# Default database path - can be overridden via environment variable
 DB_PATH = Path(__file__).parent / "sessions.db"
-
-# Thread-local storage for connections
 _local = threading.local()
 
 
@@ -55,12 +53,12 @@ def init_db():
                 kill_requested INTEGER NOT NULL DEFAULT 0
             )
         """)
-        # Add kill_requested column if it doesn't exist (for existing databases)
         cursor.execute("PRAGMA table_info(sessions)")
         columns = [row[1] for row in cursor.fetchall()]
         if "kill_requested" not in columns:
-            cursor.execute("ALTER TABLE sessions ADD COLUMN kill_requested INTEGER NOT NULL DEFAULT 0")
-        # Index for faster queries
+            cursor.execute(
+                "ALTER TABLE sessions ADD COLUMN kill_requested INTEGER NOT NULL DEFAULT 0"
+            )
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_sessions_app_name
             ON sessions(app_name)
@@ -71,76 +69,79 @@ def init_db():
         """)
 
 
-def register_session(
-    session_id: str,
-    app_name: str,
-    user_id: Optional[str] = None
-) -> None:
-    """Register a new session or update existing one."""
+def create_session(app_name: str, user_id: Optional[str] = None) -> str:
+    """Create a new session and return its ID."""
+    session_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
+
     with get_cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO sessions (session_id, app_name, user_id, start_time, last_heartbeat, status)
             VALUES (?, ?, ?, ?, ?, 'idle')
-            ON CONFLICT(session_id) DO UPDATE SET
-                last_heartbeat = excluded.last_heartbeat,
-                app_name = excluded.app_name,
-                user_id = excluded.user_id
-        """, (session_id, app_name, user_id, now, now))
+            """,
+            (session_id, app_name, user_id, now, now),
+        )
+
+    return session_id
 
 
-def update_heartbeat(session_id: str) -> None:
-    """Update the last heartbeat time for a session."""
-    now = datetime.utcnow().isoformat()
+def delete_session(session_id: str) -> bool:
+    """Delete a session. Returns True if session existed."""
     with get_cursor() as cursor:
-        cursor.execute("""
-            UPDATE sessions SET last_heartbeat = ? WHERE session_id = ?
-        """, (now, session_id))
+        cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        return cursor.rowcount > 0
 
 
-def set_status(
-    session_id: str,
-    status: str,
-    current_task: Optional[str] = None
-) -> None:
-    """Update session status and optionally the current task."""
+def update_heartbeat(session_id: str) -> Optional[bool]:
+    """Update heartbeat and return kill_requested status. Returns None if session not found."""
     now = datetime.utcnow().isoformat()
+
     with get_cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(
+            "SELECT kill_requested FROM sessions WHERE session_id = ?", (session_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        kill_requested = bool(row[0])
+
+        cursor.execute(
+            "UPDATE sessions SET last_heartbeat = ? WHERE session_id = ?",
+            (now, session_id),
+        )
+
+    return kill_requested
+
+
+def update_status(session_id: str, status: str, current_task: Optional[str] = None) -> bool:
+    """Update session status and task. Returns True if session existed."""
+    now = datetime.utcnow().isoformat()
+
+    with get_cursor() as cursor:
+        cursor.execute(
+            """
             UPDATE sessions
             SET status = ?, current_task = ?, last_heartbeat = ?
             WHERE session_id = ?
-        """, (status, current_task, now, session_id))
+            """,
+            (status, current_task, now, session_id),
+        )
+        return cursor.rowcount > 0
 
 
-def remove_session(session_id: str) -> None:
-    """Remove a session from the database."""
-    with get_cursor() as cursor:
-        cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-
-
-def request_kill(session_id: str) -> None:
-    """Request a session to be killed. The session will terminate on next heartbeat."""
+def request_kill(session_id: str) -> bool:
+    """Request session termination. Returns True if session existed."""
     with get_cursor() as cursor:
         cursor.execute(
-            "UPDATE sessions SET kill_requested = 1 WHERE session_id = ?",
-            (session_id,)
+            "UPDATE sessions SET kill_requested = 1 WHERE session_id = ?", (session_id,)
         )
-
-
-def check_kill_requested(session_id: str) -> bool:
-    """Check if a kill has been requested for this session."""
-    with get_cursor() as cursor:
-        cursor.execute(
-            "SELECT kill_requested FROM sessions WHERE session_id = ?",
-            (session_id,)
-        )
-        row = cursor.fetchone()
-        return row is not None and row[0] == 1
+        return cursor.rowcount > 0
 
 
 def get_all_sessions() -> list[dict]:
-    """Get all sessions with computed duration and staleness."""
+    """Get all sessions with computed fields."""
     now = datetime.utcnow()
     stale_threshold = now - timedelta(minutes=2)
 
@@ -161,27 +162,22 @@ def get_all_sessions() -> list[dict]:
             "user_id": row["user_id"],
             "start_time": start_time,
             "last_heartbeat": last_heartbeat,
-            "duration": duration,
+            "duration_seconds": int(duration.total_seconds()),
             "status": "stale" if is_stale else row["status"],
             "current_task": row["current_task"],
             "is_stale": is_stale,
-            "kill_requested": bool(row["kill_requested"]) if "kill_requested" in row.keys() else False,
+            "kill_requested": bool(row["kill_requested"]),
         })
 
     return sessions
 
 
 def cleanup_stale_sessions(older_than_minutes: int = 10) -> int:
-    """Remove sessions that haven't sent a heartbeat in the given time.
-
-    Returns the number of sessions removed.
-    """
+    """Remove sessions without heartbeat for the specified time. Returns count deleted."""
     threshold = (datetime.utcnow() - timedelta(minutes=older_than_minutes)).isoformat()
+
     with get_cursor() as cursor:
-        cursor.execute(
-            "DELETE FROM sessions WHERE last_heartbeat < ?",
-            (threshold,)
-        )
+        cursor.execute("DELETE FROM sessions WHERE last_heartbeat < ?", (threshold,))
         return cursor.rowcount
 
 

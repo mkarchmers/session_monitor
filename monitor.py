@@ -5,20 +5,28 @@ Displays all active sessions across Panel applications.
 Run with: panel serve monitor.py --port 5000
 """
 
+import httpx
 import pandas as pd
 import panel as pn
 
-import session_db
-
 pn.extension("perspective")
+
+SERVER_URL = "http://localhost:8000"
 
 
 def load_sessions_data() -> pd.DataFrame:
-    """Load and format session data for display."""
-    sessions = session_db.get_all_sessions()
+    """Load and format session data from the API server."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            # Get sessions
+            response = client.get(f"{SERVER_URL}/sessions")
+            response.raise_for_status()
+            sessions = response.json()["sessions"]
 
-    # Cleanup stale sessions older than 10 minutes
-    session_db.cleanup_stale_sessions(older_than_minutes=10)
+            # Cleanup stale sessions
+            client.delete(f"{SERVER_URL}/sessions/stale", params={"older_than_minutes": 10})
+    except Exception:
+        sessions = []
 
     if not sessions:
         return pd.DataFrame({
@@ -32,16 +40,32 @@ def load_sessions_data() -> pd.DataFrame:
 
     formatted = []
     for s in sessions:
+        # Parse ISO datetime string
+        start_time = s["start_time"]
+        if "T" in start_time:
+            time_part = start_time.split("T")[1][:8]
+        else:
+            time_part = start_time
+
         formatted.append({
             "Session ID": s["session_id"],
             "App": s["app_name"],
-            "Started": s["start_time"].strftime("%H:%M:%S"),
-            "Duration (s)": int(s["duration"].total_seconds()),
+            "Started": time_part,
+            "Duration (s)": s["duration_seconds"],
             "Status": s["status"],
             "Task": s["current_task"] or "",
         })
 
     return pd.DataFrame(formatted)
+
+
+def request_kill(session_id: str) -> None:
+    """Request a session to be killed via the API."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            client.post(f"{SERVER_URL}/sessions/{session_id}/kill")
+    except Exception:
+        pass
 
 
 class MonitorDashboard(pn.viewable.Viewer):
@@ -89,7 +113,7 @@ class MonitorDashboard(pn.viewable.Viewer):
     def _kill_selected(self, event) -> None:
         """Kill the selected session."""
         if self._selected_session_id:
-            session_db.request_kill(self._selected_session_id)
+            request_kill(self._selected_session_id)
             if self._status_text:
                 self._status_text.object = f"Kill requested for {self._selected_session_id[:8]}..."
             self._selected_session_id = None
