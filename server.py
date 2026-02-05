@@ -27,6 +27,13 @@ def create_session(session: SessionCreate) -> SessionCreated:
     return SessionCreated(session_id=session_id)
 
 
+@app.delete("/sessions/stale", response_model=CleanupResponse)
+def cleanup_stale_sessions(older_than_minutes: int = 10) -> CleanupResponse:
+    """Remove sessions without heartbeat for the specified time."""
+    deleted_count = session_db.cleanup_stale_sessions(older_than_minutes)
+    return CleanupResponse(deleted_count=deleted_count)
+
+
 @app.delete("/sessions/{session_id}")
 def delete_session(session_id: str) -> dict:
     """Remove a session."""
@@ -65,10 +72,3 @@ def list_sessions() -> SessionList:
     """List all sessions with computed fields."""
     sessions = [Session(**s) for s in session_db.get_all_sessions()]
     return SessionList(sessions=sessions)
-
-
-@app.delete("/sessions/stale", response_model=CleanupResponse)
-def cleanup_stale_sessions(older_than_minutes: int = 10) -> CleanupResponse:
-    """Remove sessions without heartbeat for the specified time."""
-    deleted_count = session_db.cleanup_stale_sessions(older_than_minutes)
-    return CleanupResponse(deleted_count=deleted_count)
