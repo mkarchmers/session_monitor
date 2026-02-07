@@ -54,6 +54,7 @@ class SessionClient:
         app_name: str,
         user_id: Optional[str] = None,
         server_url: str = DEFAULT_SERVER_URL,
+        heartbeat_interval: int = 30,
     ) -> "SessionClient":
         """Get or create a tracker for the current Panel session.
 
@@ -61,6 +62,7 @@ class SessionClient:
             app_name: Name of the application
             user_id: Optional user identifier
             server_url: URL of the session monitoring server
+            heartbeat_interval: Seconds between heartbeat updates
 
         Returns:
             SessionClient instance for the current session
@@ -69,7 +71,8 @@ class SessionClient:
         with cls._lock:
             if panel_session_id not in cls._instances:
                 cls._instances[panel_session_id] = cls(
-                    app_name, user_id, server_url, panel_session_id
+                    app_name, user_id, server_url, panel_session_id,
+                    heartbeat_interval=heartbeat_interval,
                 )
             return cls._instances[panel_session_id]
 
