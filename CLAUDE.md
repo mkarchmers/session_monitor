@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Code Map
+
+See `codemap.md` for a detailed map of all files, functions, data flow, and key constants.
+
 ## Project Overview
 
 A monitoring system for Panel (HoloViz) applications that tracks active sessions across multiple apps. Sessions report status via REST API to a FastAPI server, and a dashboard displays all sessions in real-time.
