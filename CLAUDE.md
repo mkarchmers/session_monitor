@@ -127,13 +127,12 @@ Callbacks are invoked exactly once (guard prevents double-execution across kill 
 When multiple sessions share a global `aiomultiprocess.Pool`, use per-session cancellation via `on_kill` instead of terminating the pool:
 
 ```python
-import multiprocessing
-import aiomultiprocess as amp
+from pool_manager import get_pool, get_manager, decrement_sessions
 from session_client import SessionClient
 from worker import worker
 
-pool = get_pool()           # global shared pool
-manager = get_manager()     # global shared Manager
+pool = get_pool()           # global shared pool (from pool_manager)
+manager = get_manager()     # global shared Manager (from pool_manager)
 tracker = SessionClient.get_tracker(app_name="my_app")
 
 stop_event = manager.Event()        # per-session, picklable
@@ -145,6 +144,8 @@ with tracker.task("Processing"):
         pool.apply(worker, (2, stop_event)),
     )
 ```
+
+**Important:** Pool state lives in `pool_manager.py` (a regular imported module), not in the served script. This is necessary because Panel re-executes the served script per session and clears its namespace on teardown — functions defined in the served script lose access to their module globals when old sessions clean up.
 
 See `app_pool.py` for the full working demo and `worker.py` for the async worker implementation.
 

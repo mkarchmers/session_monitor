@@ -56,14 +56,18 @@ Example Panel app that uses `SessionClient`.
 - **`TaskRunner`** — UI with task name input, duration slider, and run button. Runs a `time.sleep` task in a background thread wrapped in `tracker.task()`.
 - **`App`** — Bootstraps the tracker and serves the template.
 
-### `app_pool.py`
-Demo Panel app showing shared-pool per-session cancellation (Option 2).
+### `pool_manager.py`
+Shared pool state management, extracted into its own module so globals survive Panel session reloads (Panel re-executes the served script per session but does not re-execute imported modules).
 
 - **Global shared `aiomultiprocess.Pool`** — Created lazily via `get_pool()`, shared across all sessions. Terminated automatically when the last session is killed.
-- **`shutdown_pool()`** — Calls `pool.terminate()` + `pool.join()` to kill all subprocesses. Also registered via `atexit`.
-- **Ref counter** — `_increment_sessions()` / `_decrement_sessions()` track active sessions; when count reaches 0, `shutdown_pool()` is called.
+- **`shutdown_pool()`** — Calls `pool.terminate()` to kill all subprocesses. Also registered via `atexit`.
+- **Ref counter** — `increment_sessions()` / `decrement_sessions()` track active sessions; when count reaches 0, `shutdown_pool()` is called.
 - **`get_manager()`** — Singleton `multiprocessing.Manager` for creating picklable cross-process proxy objects (e.g. `Manager().Event()`).
-- **`PoolApp`** — Each session creates a per-session `Manager().Event()`, registers `stop_event.set` + `_decrement_sessions` as `on_kill` callback, and submits 2 async workers to the shared pool via `pool.apply()`. Killing all sessions triggers pool shutdown.
+
+### `app_pool.py`
+Demo Panel app showing shared-pool per-session cancellation (Option 2). Pool state lives in `pool_manager.py`.
+
+- **`PoolApp`** — Each session creates a per-session `Manager().Event()`, registers `stop_event.set` + `decrement_sessions` as `on_kill` callback, and submits 2 async workers to the shared pool via `pool.apply()`. Killing all sessions triggers pool shutdown. The `kill_handler` captures `decrement_sessions` via default arg to survive namespace cleanup.
 - Uses `amp.set_start_method("fork")` on macOS/Linux to avoid pickle/module-resolution issues; Windows uses default `"spawn"`.
 
 ### `worker.py`
@@ -99,4 +103,4 @@ Monitor Dashboard (monitor.py)
 | Stale threshold | `session_db.get_all_sessions` | 2 min |
 | Auto-cleanup threshold | `monitor.py` → `load_sessions_data` | 10 min |
 | Dashboard refresh | `monitor.py` → `MonitorDashboard.__panel__` | 10s |
-| Pool size | `app_pool.py` → `get_pool` | 4 processes |
+| Pool size | `pool_manager.py` → `get_pool` | 4 processes |
