@@ -72,10 +72,6 @@ def shutdown_pool() -> None:
         pool.terminate()
     except Exception as e:
         logger.warning(f"pool.terminate() error: {e}")
-    try:
-        pool.join()
-    except Exception as e:
-        logger.warning(f"pool.join() error: {e}")
     logger.info("Pool shut down")
 
 
