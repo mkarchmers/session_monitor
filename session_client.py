@@ -15,7 +15,7 @@ import atexit
 import logging
 import threading
 from contextlib import contextmanager
-from typing import Optional
+from typing import Callable, Generator, Optional
 
 import httpx
 import panel as pn
@@ -126,6 +126,9 @@ class SessionClient:
         # Track connection state
         self._connected = False
 
+        # Kill callbacks
+        self._on_kill_callbacks: list[Callable] = []
+
         # Register session with server (may fail if server is down)
         self.session_id = self._register_session()
 
@@ -187,12 +190,34 @@ class SessionClient:
         )
         self._heartbeat_thread.start()
 
+    def on_kill(self, callback: Callable) -> None:
+        """Register a callback to run when this session is killed.
+
+        Callbacks are invoked from the heartbeat thread before the session
+        is destroyed.  Use this to cancel per-session work (e.g. set a
+        stop event, terminate subprocesses) without tearing down a shared
+        resource pool.
+
+        Args:
+            callback: A no-argument callable.
+        """
+        self._on_kill_callbacks.append(callback)
+
     def _handle_kill_request(self) -> None:
         """Handle a kill request from the server.
 
-        Schedules session destruction on the document thread if available,
-        otherwise stops the client directly.
+        Runs registered on_kill callbacks first, then schedules session
+        destruction on the document thread if available, otherwise stops
+        the client directly.
         """
+        callbacks = self._on_kill_callbacks
+        self._on_kill_callbacks = []
+        for cb in callbacks:
+            try:
+                cb()
+            except Exception as e:
+                logger.warning(f"on_kill callback failed: {e}")
+
         try:
             doc = self._curdoc
             if doc and doc.session_context:
@@ -269,10 +294,20 @@ class SessionClient:
     def stop(self) -> None:
         """Stop tracking and clean up resources.
 
-        Stops the heartbeat thread, removes the session from the server
-        (if connected), closes the HTTP client, and removes this instance
-        from the class registry.
+        Runs any registered on_kill callbacks (once), stops the heartbeat
+        thread, removes the session from the server (if connected), closes
+        the HTTP client, and removes this instance from the class registry.
         """
+        # Run on_kill callbacks exactly once (covers page reload, tab
+        # close, and atexit — not just dashboard kill).
+        callbacks = self._on_kill_callbacks
+        self._on_kill_callbacks = []
+        for cb in callbacks:
+            try:
+                cb()
+            except Exception as e:
+                logger.warning(f"on_kill callback failed: {e}")
+
         self._stop_heartbeat.set()
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=1)
@@ -306,7 +341,7 @@ class SessionClient:
             logger.warning(f"Failed to update status: {e}")
 
     @contextmanager
-    def task(self, name: str):
+    def task(self, name: str) -> Generator[None, None, None]:
         """Context manager for tracking a task.
 
         Sets status to 'running' on entry and 'idle' on exit. The task

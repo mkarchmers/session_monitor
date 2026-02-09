@@ -8,7 +8,8 @@ HTTP client for Panel apps to report session status to the monitoring server.
 - **`SessionClient`** — One-per-session tracker. Registers with the server, sends periodic heartbeats in a daemon thread, and checks for kill requests.
   - `get_tracker(app_name, user_id?, server_url?, heartbeat_interval?)` — Class method factory. Returns the existing instance for the current Panel session or creates a new one.
   - `task(name)` — Context manager that sets status to `running`/`idle` around a block.
-  - `stop()` — Stops heartbeat, deregisters session, closes HTTP client.
+  - `on_kill(callback)` — Register a no-argument callback to run when the session is killed or destroyed (page reload, tab close, atexit). Used for per-session cleanup (e.g. setting a stop event) without tearing down shared resources.
+  - `stop()` — Runs on_kill callbacks (once), stops heartbeat, deregisters session, closes HTTP client.
   - Offline mode: if the server is unreachable at init, all tracking is silently skipped.
 
 ### `server.py`
@@ -52,6 +53,19 @@ Example Panel app that uses `SessionClient`.
 - **`TaskRunner`** — UI with task name input, duration slider, and run button. Runs a `time.sleep` task in a background thread wrapped in `tracker.task()`.
 - **`App`** — Bootstraps the tracker and serves the template.
 
+### `app_pool.py`
+Demo Panel app showing shared-pool per-session cancellation (Option 2).
+
+- **Global shared `aiomultiprocess.Pool`** — Created lazily via `get_pool()`, shared across all sessions, never terminated.
+- **`get_manager()`** — Singleton `multiprocessing.Manager` for creating picklable cross-process proxy objects (e.g. `Manager().Event()`).
+- **`PoolApp`** — Each session creates a per-session `Manager().Event()`, registers `stop_event.set` as `on_kill` callback, and submits 2 async workers to the shared pool via `pool.apply()`. Killing one session sets only that session's stop event — other sessions and the pool are unaffected.
+- Uses `amp.set_start_method("fork")` on macOS/Linux to avoid pickle/module-resolution issues; Windows uses default `"spawn"`.
+
+### `worker.py`
+Async subprocess worker used by `app_pool.py`.
+
+- `worker(task_id, stop_event, session_id?)` — `async def` that logs every 5 seconds until `stop_event` is set. Uses `asyncio.to_thread(stop_event.wait, 5)` for non-blocking, responsive shutdown. Log lines include the first 8 chars of the session ID.
+
 ## Data Flow
 
 ```
@@ -80,3 +94,4 @@ Monitor Dashboard (monitor.py)
 | Stale threshold | `session_db.get_all_sessions` | 2 min |
 | Auto-cleanup threshold | `monitor.py` → `load_sessions_data` | 10 min |
 | Dashboard refresh | `monitor.py` → `MonitorDashboard.__panel__` | 10s |
+| Pool size | `app_pool.py` → `get_pool` | 4 processes |
