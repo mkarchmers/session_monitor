@@ -6,13 +6,18 @@ Each session submits tasks via pool.apply() and uses a per-session
 stop event for cancellation — killing one session does not affect
 other sessions' work or the pool itself.
 
+When all sessions are killed (e.g. via the dashboard "Kill All" button),
+the pool is automatically terminated and its subprocesses are killed.
+
 Run with: panel serve app_pool.py --port 5001
 """
 
 import asyncio
+import atexit
 import logging
 import multiprocessing
 import platform
+import threading
 
 import aiomultiprocess as amp
 
@@ -36,18 +41,64 @@ logger = logging.getLogger(__name__)
 pn.extension(disconnect_notification="Session terminated by administrator")
 
 
-# ── Global shared pool (created lazily, never terminated) ───────────
+# ── Global shared pool ──────────────────────────────────────────────
 
 _pool: amp.Pool | None = None
 _manager: multiprocessing.managers.SyncManager | None = None
+_pool_lock = threading.Lock()
+_active_sessions = 0
 
 
 def get_pool() -> amp.Pool:
     """Return the global shared pool, creating it on first call."""
     global _pool
-    if _pool is None:
-        _pool = amp.Pool(processes=4)
-    return _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = amp.Pool(processes=4)
+            logger.info("Pool created with 4 processes")
+        return _pool
+
+
+def shutdown_pool() -> None:
+    """Terminate the pool and kill all its subprocesses."""
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            return
+        pool = _pool
+        _pool = None
+    logger.info("Terminating pool and killing subprocesses")
+    try:
+        pool.terminate()
+    except Exception as e:
+        logger.warning(f"pool.terminate() error: {e}")
+    try:
+        pool.join()
+    except Exception as e:
+        logger.warning(f"pool.join() error: {e}")
+    logger.info("Pool shut down")
+
+
+def _increment_sessions() -> None:
+    """Track a new session using the pool."""
+    global _active_sessions
+    with _pool_lock:
+        _active_sessions += 1
+        logger.info(f"Active pool sessions: {_active_sessions}")
+
+
+def _decrement_sessions() -> None:
+    """Untrack a session. Shuts down the pool when count reaches 0."""
+    global _active_sessions
+    with _pool_lock:
+        _active_sessions = max(0, _active_sessions - 1)
+        count = _active_sessions
+    logger.info(f"Active pool sessions: {count}")
+    if count == 0:
+        shutdown_pool()
+
+
+atexit.register(shutdown_pool)
 
 
 def get_manager() -> multiprocessing.managers.SyncManager:
@@ -67,16 +118,18 @@ class PoolApp:
             app_name="pool_app", heartbeat_interval=5
         )
         pool = get_pool()
+        _increment_sessions()
 
         status_md = pn.pane.Markdown("**Idle** — no workers running")
         run_btn = pn.widgets.Button(name="Run 2 Workers", button_type="primary")
 
         stop_event = get_manager().Event()
 
-        # ── on_kill: signal this session's workers only ─────────
+        # ── on_kill: signal this session's workers, decrement ref counter
 
         def kill_handler():
             stop_event.set()
+            _decrement_sessions()
 
         tracker.on_kill(kill_handler)
 

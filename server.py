@@ -10,6 +10,7 @@ import session_db
 from models import (
     CleanupResponse,
     HeartbeatResponse,
+    KillAllResponse,
     Session,
     SessionCreate,
     SessionCreated,
@@ -65,6 +66,13 @@ def kill_session(session_id: str) -> dict:
     if not session_db.request_kill(session_id):
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "kill_requested"}
+
+
+@app.post("/apps/{app_name}/kill-all", response_model=KillAllResponse)
+def kill_all_sessions(app_name: str) -> KillAllResponse:
+    """Request termination for all sessions of a given app."""
+    killed_count = session_db.request_kill_by_app(app_name)
+    return KillAllResponse(killed_count=killed_count)
 
 
 @app.get("/sessions", response_model=SessionList)

@@ -172,6 +172,16 @@ def get_all_sessions() -> list[dict]:
     return sessions
 
 
+def request_kill_by_app(app_name: str) -> int:
+    """Request termination for all sessions of a given app. Returns count affected."""
+    with get_cursor() as cursor:
+        cursor.execute(
+            "UPDATE sessions SET kill_requested = 1 WHERE app_name = ? AND kill_requested = 0",
+            (app_name,),
+        )
+        return cursor.rowcount
+
+
 def cleanup_stale_sessions(older_than_minutes: int = 10) -> int:
     """Remove sessions without heartbeat for the specified time. Returns count deleted."""
     threshold = (datetime.utcnow() - timedelta(minutes=older_than_minutes)).isoformat()

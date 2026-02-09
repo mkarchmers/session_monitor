@@ -52,3 +52,8 @@ class SessionCreated(BaseModel):
 class CleanupResponse(BaseModel):
     """Response model for cleanup endpoint."""
     deleted_count: int
+
+
+class KillAllResponse(BaseModel):
+    """Response model for kill-all endpoint."""
+    killed_count: int

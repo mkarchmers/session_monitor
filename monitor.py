@@ -68,6 +68,17 @@ def request_kill(session_id: str) -> None:
         pass
 
 
+def request_kill_all(app_name: str) -> int:
+    """Request all sessions of an app to be killed. Returns count."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(f"{SERVER_URL}/apps/{app_name}/kill-all")
+            resp.raise_for_status()
+            return resp.json().get("killed_count", 0)
+    except Exception:
+        return 0
+
+
 class MonitorDashboard(pn.viewable.Viewer):
     """Main monitoring dashboard component."""
 
@@ -76,6 +87,8 @@ class MonitorDashboard(pn.viewable.Viewer):
         self._perspective = None
         self._selected_session_id = None
         self._kill_btn = None
+        self._kill_all_btn = None
+        self._app_select = None
         self._status_text = None
 
     def _create_perspective(self) -> pn.pane.Perspective:
@@ -95,13 +108,14 @@ class MonitorDashboard(pn.viewable.Viewer):
     def _handle_click(self, event) -> None:
         """Handle click events on the Perspective pane."""
         session_id = None
+        row_data = None
         if hasattr(event, "row") and event.row:
             row_data = event.row
-            if isinstance(row_data, dict) and "Session ID" in row_data:
-                session_id = row_data["Session ID"]
         elif hasattr(event, "config") and event.config:
-            if isinstance(event.config, dict) and "Session ID" in event.config:
-                session_id = event.config["Session ID"]
+            row_data = event.config
+
+        if isinstance(row_data, dict):
+            session_id = row_data.get("Session ID")
 
         if session_id:
             self._selected_session_id = session_id
@@ -121,10 +135,32 @@ class MonitorDashboard(pn.viewable.Viewer):
                 self._kill_btn.disabled = True
             self._refresh()
 
+    def _kill_all(self, event) -> None:
+        """Kill all sessions for the selected app."""
+        if self._app_select and self._app_select.value:
+            app_name = self._app_select.value
+            count = request_kill_all(app_name)
+            if self._status_text:
+                self._status_text.object = (
+                    f"Kill requested for {count} session(s) of '{app_name}'"
+                )
+            self._selected_session_id = None
+            if self._kill_btn:
+                self._kill_btn.disabled = True
+            self._refresh()
+
     def _refresh(self) -> None:
         """Refresh the data without rebuilding the Perspective pane."""
+        data = load_sessions_data()
         if self._perspective:
-            self._perspective.object = load_sessions_data()
+            self._perspective.object = data
+        # Update app selector options from current data
+        if self._app_select is not None:
+            apps = sorted(data["App"].unique().tolist()) if not data.empty else []
+            prev = self._app_select.value
+            self._app_select.options = apps
+            if prev in apps:
+                self._app_select.value = prev
         # Reset status if no session is selected
         if self._selected_session_id is None and self._status_text:
             self._status_text.object = "*Click a row to select a session*"
@@ -159,12 +195,29 @@ class MonitorDashboard(pn.viewable.Viewer):
         )
         self._kill_btn.on_click(self._kill_selected)
 
+        initial_data = load_sessions_data()
+        initial_apps = sorted(initial_data["App"].unique().tolist()) if not initial_data.empty else []
+        self._app_select = pn.widgets.Select(
+            name="App",
+            options=initial_apps,
+            width=150,
+        )
+
+        self._kill_all_btn = pn.widgets.Button(
+            name="Kill All (App)",
+            button_type="danger",
+            width=120,
+        )
+        self._kill_all_btn.on_click(self._kill_all)
+
         self._status_text = pn.pane.Markdown("*Click a row to select a session*")
 
         header = pn.Row(
             pn.pane.Markdown("## Active Sessions"),
             pn.Spacer(),
             self._status_text,
+            self._app_select,
+            self._kill_all_btn,
             self._kill_btn,
             refresh_btn,
             sizing_mode="stretch_width",

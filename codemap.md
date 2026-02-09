@@ -23,6 +23,7 @@ FastAPI REST server. Thin layer over `session_db`.
 | `POST` | `/sessions/{id}/heartbeat` | `heartbeat` — update timestamp, return `kill_requested` |
 | `PUT` | `/sessions/{id}/status` | `update_status` — set status + current task |
 | `POST` | `/sessions/{id}/kill` | `kill_session` — flag session for termination |
+| `POST` | `/apps/{app_name}/kill-all` | `kill_all_sessions` — flag all sessions of an app for termination |
 | `GET` | `/sessions` | `list_sessions` — all sessions with computed fields |
 
 ### `session_db.py`
@@ -34,18 +35,20 @@ SQLite persistence layer. Thread-safe via thread-local connections (`threading.l
 - `update_heartbeat(session_id) -> Optional[bool]` — Returns `kill_requested`.
 - `update_status(session_id, status, current_task?) -> bool`
 - `request_kill(session_id) -> bool`
+- `request_kill_by_app(app_name) -> int` — Sets `kill_requested` on all sessions for a given app.
 - `get_all_sessions() -> list[dict]` — Computes `duration_seconds`, `is_stale` (no heartbeat for 2+ min).
 - `cleanup_stale_sessions(older_than_minutes) -> int`
 
 ### `models.py`
-Pydantic request/response schemas: `SessionCreate`, `SessionStatus`, `HeartbeatResponse`, `Session`, `SessionList`, `SessionCreated`, `CleanupResponse`.
+Pydantic request/response schemas: `SessionCreate`, `SessionStatus`, `HeartbeatResponse`, `Session`, `SessionList`, `SessionCreated`, `CleanupResponse`, `KillAllResponse`.
 
 ### `monitor.py`
 Panel dashboard app. Shows all sessions in a Perspective table, auto-refreshes every 10s, supports row selection and kill.
 
 - `load_sessions_data()` — Fetches sessions from the API, triggers stale cleanup, returns a DataFrame.
 - `request_kill(session_id)` — Sends kill request to the API.
-- **`MonitorDashboard`** — `pn.viewable.Viewer` with Perspective widget, kill button, and refresh controls.
+- `request_kill_all(app_name) -> int` — Sends kill-all request for an app, returns count.
+- **`MonitorDashboard`** — `pn.viewable.Viewer` with Perspective widget, kill button, kill-all button, and refresh controls.
 
 ### `app.py`
 Example Panel app that uses `SessionClient`.
@@ -56,9 +59,11 @@ Example Panel app that uses `SessionClient`.
 ### `app_pool.py`
 Demo Panel app showing shared-pool per-session cancellation (Option 2).
 
-- **Global shared `aiomultiprocess.Pool`** — Created lazily via `get_pool()`, shared across all sessions, never terminated.
+- **Global shared `aiomultiprocess.Pool`** — Created lazily via `get_pool()`, shared across all sessions. Terminated automatically when the last session is killed.
+- **`shutdown_pool()`** — Calls `pool.terminate()` + `pool.join()` to kill all subprocesses. Also registered via `atexit`.
+- **Ref counter** — `_increment_sessions()` / `_decrement_sessions()` track active sessions; when count reaches 0, `shutdown_pool()` is called.
 - **`get_manager()`** — Singleton `multiprocessing.Manager` for creating picklable cross-process proxy objects (e.g. `Manager().Event()`).
-- **`PoolApp`** — Each session creates a per-session `Manager().Event()`, registers `stop_event.set` as `on_kill` callback, and submits 2 async workers to the shared pool via `pool.apply()`. Killing one session sets only that session's stop event — other sessions and the pool are unaffected.
+- **`PoolApp`** — Each session creates a per-session `Manager().Event()`, registers `stop_event.set` + `_decrement_sessions` as `on_kill` callback, and submits 2 async workers to the shared pool via `pool.apply()`. Killing all sessions triggers pool shutdown.
 - Uses `amp.set_start_method("fork")` on macOS/Linux to avoid pickle/module-resolution issues; Windows uses default `"spawn"`.
 
 ### `worker.py`

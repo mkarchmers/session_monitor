@@ -73,6 +73,7 @@ panel serve app_pool.py --port 5002 &
   | POST | `/sessions/{session_id}/heartbeat` | Update heartbeat, returns kill_requested |
   | PUT | `/sessions/{session_id}/status` | Update status and task |
   | POST | `/sessions/{session_id}/kill` | Request session termination |
+  | POST | `/apps/{app_name}/kill-all` | Kill all sessions for an app |
   | GET | `/sessions` | List all sessions with computed fields |
   | DELETE | `/sessions/stale` | Cleanup stale sessions |
 
@@ -160,6 +161,19 @@ Sessions can be terminated from the monitoring dashboard by clicking the "Kill" 
 7. After 500ms delay, session is destroyed server-side
 
 **Note**: Kill takes effect on the next heartbeat cycle (up to 30 seconds). For faster response, reduce `heartbeat_interval` in SessionClient.
+
+### Kill All + Pool Shutdown
+
+When using a shared `aiomultiprocess.Pool`, individual session kills only cancel that session's work. To kill **all** sessions and terminate the pool's subprocesses:
+
+1. Dashboard "Kill All (App)" button sends `POST /apps/{app_name}/kill-all`
+2. Server sets `kill_requested` on all sessions for that app
+3. Each session's `on_kill` callbacks fire (set stop events + decrement ref counter)
+4. When the last session decrements the counter to 0, `shutdown_pool()` is called
+5. `pool.terminate()` sends SIGTERM to all pool worker processes
+6. Pool is reset to `None` (will be recreated lazily if new sessions start)
+
+The pool is also terminated via `atexit` when the Panel server process exits.
 
 ## Dependencies
 
