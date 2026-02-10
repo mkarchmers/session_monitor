@@ -18,13 +18,9 @@ def load_sessions_data() -> pd.DataFrame:
     """Load and format session data from the API server."""
     try:
         with httpx.Client(timeout=10.0) as client:
-            # Get sessions
             response = client.get(f"{SERVER_URL}/sessions")
             response.raise_for_status()
             sessions = response.json()["sessions"]
-
-            # Cleanup stale sessions
-            client.delete(f"{SERVER_URL}/sessions/stale", params={"older_than_minutes": 10})
     except Exception:
         sessions = []
 
@@ -57,6 +53,15 @@ def load_sessions_data() -> pd.DataFrame:
         })
 
     return pd.DataFrame(formatted)
+
+
+def cleanup_stale_sessions() -> None:
+    """Remove sessions without a heartbeat for 10+ minutes."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            client.delete(f"{SERVER_URL}/sessions/stale", params={"older_than_minutes": 10})
+    except Exception:
+        pass
 
 
 def request_kill(session_id: str) -> None:
@@ -174,9 +179,16 @@ class MonitorDashboard(pn.viewable.Viewer):
             period=10000,
         )
 
-        # Clean up callback when session disconnects
+        # Cleanup stale sessions every 60 seconds
+        cleanup_callback = pn.state.add_periodic_callback(
+            cleanup_stale_sessions,
+            period=60000,
+        )
+
+        # Clean up callbacks when session disconnects
         def cleanup(session_context):
             refresh_callback.stop()
+            cleanup_callback.stop()
 
         pn.state.on_session_destroyed(cleanup)
 
