@@ -73,7 +73,17 @@ Demo Panel app showing shared-pool per-session cancellation (Option 2). Pool sta
 ### `worker.py`
 Async subprocess worker used by `app_pool.py`.
 
-- `worker(task_id, stop_event, session_id?)` — `async def` that logs every 5 seconds until `stop_event` is set. Uses `asyncio.to_thread(stop_event.wait, 5)` for non-blocking, responsive shutdown. Log lines include the first 8 chars of the session ID.
+- `_sub_task(sub_id, tag, sid, log)` — One of 5 concurrent coroutines per cycle. Sleeps 1 second then returns a result string.
+- `worker(task_id, stop_event, session_id?)` — `async def` loop. Each iteration runs 5 `_sub_task` coroutines concurrently via `asyncio.gather` (~1 s per cycle). Checks `stop_event.is_set()` (via `asyncio.to_thread`) **between** cycles — in-flight coroutines always run to completion. Log lines include the first 8 chars of the session ID.
+
+  Termination paths:
+  - **`stop_event.set()`**: detected at the next cycle boundary; current cycle's coroutines finish cleanly.
+  - **`pool.terminate()` / SIGTERM**: subprocess killed immediately; all coroutines vanish with no cleanup.
+
+### `test_stop_event.py`
+Standalone end-to-end test for the graceful stop path.
+
+- Starts a `multiprocessing.Manager` and `aiomultiprocess.Pool`, submits 2 workers, sets `stop_event` after 2.5 s (mid-cycle), and verifies both workers exit cleanly after finishing their current cycle.
 
 ## Data Flow
 

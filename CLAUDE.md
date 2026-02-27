@@ -147,7 +147,9 @@ with tracker.task("Processing"):
 
 **Important:** Pool state lives in `pool_manager.py` (a regular imported module), not in the served script. This is necessary because Panel re-executes the served script per session and clears its namespace on teardown — functions defined in the served script lose access to their module globals when old sessions clean up.
 
-See `app_pool.py` for the full working demo and `worker.py` for the async worker implementation.
+See `app_pool.py` for the full working demo and `worker.py` for the async worker implementation. Run `python3 test_stop_event.py` to exercise the graceful stop path end-to-end without a browser.
+
+**Worker cycle behaviour:** Each loop iteration runs 5 coroutines concurrently via `asyncio.gather` (~1 s per cycle). `stop_event` is checked **between** cycles, so in-flight coroutines always run to completion. `pool.terminate()` / SIGTERM kills the subprocess immediately with no cleanup.
 
 ### Kill Session Feature
 
