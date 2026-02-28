@@ -135,15 +135,8 @@ class MonitorDashboard(pn.viewable.Viewer):
 
     def _handle_click(self, event) -> None:
         """Handle click events on the Perspective pane."""
-        session_id = None
-        row_data = None
-        if hasattr(event, "row") and event.row:
-            row_data = event.row
-        elif hasattr(event, "config") and event.config:
-            row_data = event.config
-
-        if isinstance(row_data, dict):
-            session_id = row_data.get("Session ID")
+        row_data = getattr(event, "row", None) or getattr(event, "config", None)
+        session_id = row_data.get("Session ID") if isinstance(row_data, dict) else None
 
         if session_id:
             if session_id == self._selected_session_id:
@@ -193,7 +186,7 @@ class MonitorDashboard(pn.viewable.Viewer):
             self._perspective.object = self._get_display_data()
         # Update app selector options from current data
         if self._app_select is not None:
-            apps = sorted(self._current_data["App"].unique().tolist()) if not self._current_data.empty else []
+            apps = sorted(self._current_data["App"].unique()) if not self._current_data.empty else []
             prev = self._app_select.value
             self._app_select.options = apps
             if prev in apps:
@@ -239,8 +232,7 @@ class MonitorDashboard(pn.viewable.Viewer):
         )
         self._kill_btn.on_click(self._kill_selected)
 
-        initial_data = load_sessions_data()
-        initial_apps = sorted(initial_data["App"].unique().tolist()) if not initial_data.empty else []
+        initial_apps = sorted(self._current_data["App"].unique()) if not self._current_data.empty else []
         self._app_select = pn.widgets.Select(
             name="App",
             options=initial_apps,
