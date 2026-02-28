@@ -91,24 +91,47 @@ class MonitorDashboard(pn.viewable.Viewer):
         super().__init__()
         self._perspective = None
         self._selected_session_id = None
+        self._current_data = None
         self._kill_btn = None
         self._kill_all_btn = None
         self._app_select = None
         self._status_text = None
 
+    def _get_display_data(self) -> pd.DataFrame:
+        """Return data with a selection indicator column prepended."""
+        if self._current_data is None or self._current_data.empty:
+            return self._current_data if self._current_data is not None else pd.DataFrame()
+        data = self._current_data.copy()
+        data.insert(0, "▶", (data["Session ID"] == self._selected_session_id).astype(int))
+        return data
+
     def _create_perspective(self) -> pn.pane.Perspective:
         """Create the sessions Perspective pane."""
-        data = load_sessions_data()
+        self._current_data = load_sessions_data()
 
         perspective = pn.pane.Perspective(
-            data,
+            self._get_display_data(),
             height=400,
             sizing_mode="stretch_width",
             selectable=True,
             plugin="datagrid",
+            plugin_config={
+                "columns": {
+                    "▶": {
+                        "number_bg_mode": "gradient",
+                        "gradient": 1,
+                    }
+                }
+            },
         )
         perspective.on_click(self._handle_click)
         return perspective
+
+    def _apply_selection(self) -> None:
+        """Refresh Perspective data to reflect the current selection highlight."""
+        if self._perspective is None or self._current_data is None:
+            return
+        self._perspective.object = self._get_display_data()
 
     def _handle_click(self, event) -> None:
         """Handle click events on the Perspective pane."""
@@ -123,11 +146,19 @@ class MonitorDashboard(pn.viewable.Viewer):
             session_id = row_data.get("Session ID")
 
         if session_id:
-            self._selected_session_id = session_id
-            if self._kill_btn:
-                self._kill_btn.disabled = False
-            if self._status_text:
-                self._status_text.object = f"Selected: {self._selected_session_id[:8]}..."
+            if session_id == self._selected_session_id:
+                self._selected_session_id = None
+                if self._kill_btn:
+                    self._kill_btn.disabled = True
+                if self._status_text:
+                    self._status_text.object = "*Click a row to select a session*"
+            else:
+                self._selected_session_id = session_id
+                if self._kill_btn:
+                    self._kill_btn.disabled = False
+                if self._status_text:
+                    self._status_text.object = f"Selected: {self._selected_session_id[:8]}..."
+            self._apply_selection()
 
     def _kill_selected(self, event) -> None:
         """Kill the selected session."""
@@ -138,6 +169,7 @@ class MonitorDashboard(pn.viewable.Viewer):
             self._selected_session_id = None
             if self._kill_btn:
                 self._kill_btn.disabled = True
+            self._apply_selection()
             self._refresh()
 
     def _kill_all(self, event) -> None:
@@ -156,12 +188,12 @@ class MonitorDashboard(pn.viewable.Viewer):
 
     def _refresh(self) -> None:
         """Refresh the data without rebuilding the Perspective pane."""
-        data = load_sessions_data()
+        self._current_data = load_sessions_data()
         if self._perspective:
-            self._perspective.object = data
+            self._perspective.object = self._get_display_data()
         # Update app selector options from current data
         if self._app_select is not None:
-            apps = sorted(data["App"].unique().tolist()) if not data.empty else []
+            apps = sorted(self._current_data["App"].unique().tolist()) if not self._current_data.empty else []
             prev = self._app_select.value
             self._app_select.options = apps
             if prev in apps:
