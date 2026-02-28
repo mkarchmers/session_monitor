@@ -14,6 +14,7 @@ Usage:
 import atexit
 import logging
 import threading
+import uuid
 from contextlib import contextmanager
 from typing import Callable, Generator, Optional
 
@@ -88,8 +89,6 @@ class SessionClient:
                 return pn.state.curdoc.session_context.id
         except Exception:
             pass
-        import uuid
-
         return str(uuid.uuid4())
 
     def __init__(
@@ -128,6 +127,7 @@ class SessionClient:
 
         # Kill callbacks
         self._on_kill_callbacks: list[Callable] = []
+        self._stopped = False
 
         # Register session with server (may fail if server is down)
         self.session_id = self._register_session()
@@ -159,7 +159,6 @@ class SessionClient:
         except Exception as e:
             logger.warning(f"Server unavailable, running in offline mode: {e}")
             self._connected = False
-            import uuid
             return str(uuid.uuid4())
 
     def _start_heartbeat(self) -> None:
@@ -203,13 +202,8 @@ class SessionClient:
         """
         self._on_kill_callbacks.append(callback)
 
-    def _handle_kill_request(self) -> None:
-        """Handle a kill request from the server.
-
-        Runs registered on_kill callbacks first, then schedules session
-        destruction on the document thread if available, otherwise stops
-        the client directly.
-        """
+    def _drain_kill_callbacks(self) -> None:
+        """Run and clear all registered on_kill callbacks exactly once."""
         callbacks = self._on_kill_callbacks
         self._on_kill_callbacks = []
         for cb in callbacks:
@@ -217,6 +211,15 @@ class SessionClient:
                 cb()
             except Exception as e:
                 logger.warning(f"on_kill callback failed: {e}")
+
+    def _handle_kill_request(self) -> None:
+        """Handle a kill request from the server.
+
+        Runs registered on_kill callbacks first, then schedules session
+        destruction on the document thread if available, otherwise stops
+        the client directly.
+        """
+        self._drain_kill_callbacks()
 
         try:
             doc = self._curdoc
@@ -298,15 +301,12 @@ class SessionClient:
         thread, removes the session from the server (if connected), closes
         the HTTP client, and removes this instance from the class registry.
         """
+        if self._stopped:
+            return
+        self._stopped = True
         # Run on_kill callbacks exactly once (covers page reload, tab
         # close, and atexit — not just dashboard kill).
-        callbacks = self._on_kill_callbacks
-        self._on_kill_callbacks = []
-        for cb in callbacks:
-            try:
-                cb()
-            except Exception as e:
-                logger.warning(f"on_kill callback failed: {e}")
+        self._drain_kill_callbacks()
 
         self._stop_heartbeat.set()
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
